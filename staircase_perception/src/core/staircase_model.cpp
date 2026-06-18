@@ -1584,6 +1584,9 @@ stair_utility::StaircaseProcessingResult StaircaseModel::updateStaircase(const s
     stair_utility::StaircaseProcessingResult process_result;
     process_result.success = true;
 
+    // Count this as another world-frame observation of the same staircase.
+    times_observed_++;
+
     std::chrono::system_clock::time_point t1, t2, t3, t4, t5, t6, t7, t8;
     t1 = std::chrono::high_resolution_clock::now();
     

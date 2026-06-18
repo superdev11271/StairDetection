@@ -37,6 +37,9 @@ StaircaseEstimationRobotNode::StaircaseEstimationRobotNode() : Node("staircase_e
     this->declare_parameter<bool>("publish_measurements", false);
     this->declare_parameter<bool>("transform_detections_to_global", true);
     this->declare_parameter<std::string>("robot_topics_prefix", "");
+    this->declare_parameter<double>("detection_retention_range", 5.0);
+    this->declare_parameter<double>("detection_hold_time", 1.0);
+    this->declare_parameter<double>("debug_marker_lifetime", 0.5);
 
     this->get_parameter("ros_rate", ros_rate_);
     this->get_parameter("debug", debug_);
@@ -46,6 +49,9 @@ StaircaseEstimationRobotNode::StaircaseEstimationRobotNode() : Node("staircase_e
     this->get_parameter("publish_measurements", publish_staircase_measurement_);
     this->get_parameter("transform_detections_to_global", transform_detections_to_global_);
     this->get_parameter("robot_topics_prefix", robots_topics_prefix_);
+    this->get_parameter("detection_retention_range", detection_retention_range_);
+    this->get_parameter("detection_hold_time", detection_hold_time_);
+    this->get_parameter("debug_marker_lifetime", debug_marker_lifetime_);
 
     // Point cloud pre-processing params
     this->declare_parameter<double>("stair_pointcloud.leaf_size", 0.025);
@@ -81,6 +87,12 @@ StaircaseEstimationRobotNode::StaircaseEstimationRobotNode() : Node("staircase_e
     this->declare_parameter<double>("stair_detector.max_stair_depth", 0.35);
     this->declare_parameter<double>("stair_detector.max_stair_curvature", 0.55);
 
+    // Detection gating (<= 0.0 disables a gate)
+    this->declare_parameter<double>("stair_detector.max_detection_range", -1.0);
+    this->declare_parameter<double>("stair_detector.max_line_fit_stddev", -1.0);
+    this->declare_parameter<double>("stair_detector.max_step_depth_variation", -1.0);
+    this->declare_parameter<double>("stair_detector.max_step_height_variation", -1.0);
+
     this->get_parameter("stair_detector.angle_resolution", detector_params_.angle_resolution);
     this->get_parameter("stair_detector.robot_height", detector_params_.robot_height);
     this->get_parameter("stair_detector.min_stair_count", detector_params_.min_stair_count);
@@ -96,6 +108,11 @@ StaircaseEstimationRobotNode::StaircaseEstimationRobotNode() : Node("staircase_e
     this->get_parameter<double>("stair_detector.mix_stair_depth", detector_params_.min_stair_depth);
     this->get_parameter<double>("stair_detector.max_stair_depth", detector_params_.max_stair_depth);
     this->get_parameter<double>("stair_detector.max_stair_curvature", detector_params_.max_stair_curvature);
+
+    this->get_parameter<double>("stair_detector.max_detection_range", detector_params_.max_detection_range);
+    this->get_parameter<double>("stair_detector.max_line_fit_stddev", detector_params_.max_line_fit_stddev);
+    this->get_parameter<double>("stair_detector.max_step_depth_variation", detector_params_.max_step_depth_variation);
+    this->get_parameter<double>("stair_detector.max_step_height_variation", detector_params_.max_step_height_variation);
 
     detector_params_.leaf_size = leaf_size_;
     detector_params_.x_max = max_range_x_;
@@ -136,10 +153,12 @@ StaircaseEstimationRobotNode::StaircaseEstimationRobotNode() : Node("staircase_e
     this->declare_parameter<double>("stair_manager.yaw_threshold", 0.75);
     this->declare_parameter<std::string>("stair_manager.filter_type", "l_ekf");
     this->declare_parameter<double>("stair_manager.max_surface_z_threshold", 0.05);
+    this->declare_parameter<int>("stair_manager.min_detections_to_confirm", 1);
 
     std::string filter_type;
     this->get_parameter("stair_manager.yaw_threshold", stair_manager_params_.yaw_threshold);
     this->get_parameter("stair_manager.filter_type", filter_type);
+    this->get_parameter("stair_manager.min_detections_to_confirm", stair_manager_params_.min_detections_to_confirm);
     stair_manager_params_.robot_name = robot_name_;
 
     // === 2. Initialize Member Variables and Objects ===
@@ -252,10 +271,14 @@ void StaircaseEstimationRobotNode::PerceiveStaircases()
 {   
     auto ts = std::chrono::high_resolution_clock::now();
 
-    if (new_lasercloud_ && enable_stair_detection_ && odom_initialized_)
-    {   
+    // Guard against an empty accumulated cloud: when the robot is in a region with no points
+    // inside the crop box, lasercloud_stacked_ is empty (width == 0). pcl::transformPointCloud
+    // then does an integer divide by the cloud width (PointCloud::assign -> height = size()/width),
+    // which raises SIGFPE. Skip detection this cycle when there is nothing to process.
+    if (new_lasercloud_ && enable_stair_detection_ && odom_initialized_ && !lasercloud_stacked_->empty())
+    {
         auto t1 = std::chrono::high_resolution_clock::now();
-        
+
         // In ROS 2, we use tf2::Transform for calculations.
         tf2::Transform transform_transl, transform_rot;
         transform_transl.setIdentity();
@@ -296,23 +319,34 @@ void StaircaseEstimationRobotNode::PerceiveStaircases()
             robot_pos_.vehicle_quat = Eigen::Quaterniond(rotation.w(), rotation.x(), rotation.y(), rotation.z());
             int st_id;
 
+            bool is_confirmed = false;
             if(stair_detected_ == stair_utility::StaircaseDetectorResult::StairsDetectedUp || stair_detected_ == stair_utility::StaircaseDetectorResult::StairsDetectedBoth){
                 staircase_up_.robot_pose = robot_pos_;
-                st_id = manager_.addNewDetectedStaircase(staircase_up_, stair_up_estimate_);
-                
+                st_id = manager_.addNewDetectedStaircase(staircase_up_, stair_up_estimate_, is_confirmed);
+
                 if(publish_staircase_measurement_){
                     publishStaircaseMeasurement(staircase_up_, true);
                 }
-                publishStaircaseEstimate(stair_up_estimate_);
+                // Only publish once the staircase is confirmed across enough world-frame observations.
+                if(is_confirmed){
+                    publishStaircaseEstimate(stair_up_estimate_);
+                    last_published_estimates_[stair_up_estimate_.stair_id] = stair_up_estimate_;
+                    last_detection_time_[stair_up_estimate_.stair_id] = this->now();
+                }
             }
             if(stair_detected_ == stair_utility::StaircaseDetectorResult::StairsDetectedDown || stair_detected_ == stair_utility::StaircaseDetectorResult::StairsDetectedBoth){
                 staircase_down_.robot_pose = robot_pos_;
-                st_id = manager_.addNewDetectedStaircase(staircase_down_, stair_down_estimate_);
+                st_id = manager_.addNewDetectedStaircase(staircase_down_, stair_down_estimate_, is_confirmed);
 
                 if(publish_staircase_measurement_){
                     publishStaircaseMeasurement(staircase_down_, false);
                 }
-                publishStaircaseEstimate(stair_down_estimate_);
+                // Only publish once the staircase is confirmed across enough world-frame observations.
+                if(is_confirmed){
+                    publishStaircaseEstimate(stair_down_estimate_);
+                    last_published_estimates_[stair_down_estimate_.stair_id] = stair_down_estimate_;
+                    last_detection_time_[stair_down_estimate_.stair_id] = this->now();
+                }
             }
 
             auto t4 = std::chrono::high_resolution_clock::now();
@@ -321,6 +355,12 @@ void StaircaseEstimationRobotNode::PerceiveStaircases()
             auto d3 = std::chrono::duration_cast<std::chrono::microseconds>(t4 - t3);
             
             // RCLCPP_INFO(this->get_logger(), "\033[1;35m[Staircase Robot Node Times] PointCloud: %ld, Detection: %ld, Matching and Merging: %ld \033[0m", d1.count(), d2.count(), d3.count());
+        }
+        else
+        {
+            // Detector found nothing this frame: keep nearby staircases alive so a momentary
+            // dropout doesn't make a clearly-present staircase disappear.
+            republishRecentStaircases();
         }
 
         // new_lasercloud_ = false;
@@ -534,6 +574,53 @@ void StaircaseEstimationRobotNode::publishStaircaseEstimate(const stair_utility:
     stairs_pub_->publish(std::move(stair_msg));
 }
 
+// Re-publish the most recently confirmed staircases that are still within
+// detection_retention_range_ of the robot. Called on frames where the detector returned
+// nothing, so a momentary dropout doesn't make a nearby, clearly-present staircase vanish.
+// Distance is the nearest step to the robot in 3D (odom frame). The vertical (z) term is
+// essential in multi-floor buildings: a staircase one floor below sits at nearly the same
+// (x, y) but several meters down, so a 2D check would wrongly keep re-publishing it.
+void StaircaseEstimationRobotNode::republishRecentStaircases() {
+    if (detection_retention_range_ <= 0.0 || last_published_estimates_.empty())
+        return;
+
+    const double range_sq = detection_retention_range_ * detection_retention_range_;
+
+    for (const auto& entry : last_published_estimates_) {
+        const int stair_id = entry.first;
+        const stair_utility::StaircaseEstimate& estimate = entry.second;
+        if (estimate.steps.empty())
+            continue;
+
+        // Time gate: only bridge brief dropouts. If the detector hasn't actually seen this
+        // staircase for longer than detection_hold_time_, stop re-publishing it (the robot can
+        // no longer see it), so it isn't shown indefinitely just for being nearby.
+        if (detection_hold_time_ > 0.0) {
+            auto t_it = last_detection_time_.find(stair_id);
+            if (t_it == last_detection_time_.end() ||
+                (this->now() - t_it->second).seconds() > detection_hold_time_) {
+                continue;
+            }
+        }
+
+        double min_dist_sq = std::numeric_limits<double>::max();
+        for (const auto& step : estimate.steps) {
+            const double dxs = step.start_p(0) - vehicle_x_;
+            const double dys = step.start_p(1) - vehicle_y_;
+            const double dzs = step.start_p(2) - vehicle_z_;
+            min_dist_sq = std::min(min_dist_sq, dxs * dxs + dys * dys + dzs * dzs);
+            const double dxe = step.end_p(0) - vehicle_x_;
+            const double dye = step.end_p(1) - vehicle_y_;
+            const double dze = step.end_p(2) - vehicle_z_;
+            min_dist_sq = std::min(min_dist_sq, dxe * dxe + dye * dye + dze * dze);
+        }
+
+        if (min_dist_sq <= range_sq) {
+            publishStaircaseEstimate(estimate);
+        }
+    }
+}
+
 void StaircaseEstimationRobotNode::publishLineMarkers() {
     auto marker_array_msg = std::make_unique<visualization_msgs::msg::MarkerArray>();
     
@@ -554,9 +641,12 @@ void StaircaseEstimationRobotNode::publishLineMarkers() {
     marker_up.scale.x = 0.05;
     marker_up.color.b = 1.0;
     marker_up.color.a = 1.0;
-    
+    // Expire if not refreshed, so debug lines don't freeze in the world frame when the robot
+    // moves on / the detector stops producing lines (they are re-published every cycle while active).
+    marker_up.lifetime = rclcpp::Duration::from_seconds(debug_marker_lifetime_);
+
     // Configure 'down' marker
-    marker_down = marker_up; // Copy properties
+    marker_down = marker_up; // Copy properties (incl. lifetime)
     marker_down.ns = "line_extraction_marker_down";
     marker_down.id = 2;
     marker_down.color.r = 1.0;

@@ -63,6 +63,12 @@ namespace stair_utility
         double max_stair_depth;
         double max_stair_curvature;
 
+        // Detection gating (all disabled when <= 0.0 so callers that don't set them are unaffected)
+        double max_detection_range = -1.0;        // [m] reject lines/steps whose center is farther than this from the robot
+        double max_line_fit_stddev = -1.0;        // [m] reject lines whose radius-fit std-dev exceeds this (line fit quality)
+        double max_step_depth_variation = -1.0;   // [m] reject staircases whose inter-step depth std-dev exceeds this (regularity)
+        double max_step_height_variation = -1.0;  // [m] reject staircases whose inter-step height std-dev exceeds this (regularity)
+
         float x_max;
         float x_min;
         float y_max;
@@ -102,6 +108,11 @@ namespace stair_utility
     struct StairManagerParams{
         std::string robot_name; // [robot name]
         float yaw_threshold; // [rad]
+
+        // Number of times a staircase must be (re)observed and associated in the world frame
+        // before it is published. 1 publishes on first detection (gate disabled); higher values
+        // suppress pose-dependent false positives that only appear from a single viewpoint.
+        int min_detections_to_confirm = 1;
 
         StaircaseFilterType filter_type;
         constantWidthEKFParams filter_sigmas;

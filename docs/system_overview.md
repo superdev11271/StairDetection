@@ -30,7 +30,7 @@ The nominal operation of the package is through launching the `staircase_robot_n
 ros2 launch staircase_perception staircase_estimation_robot_nodes.launch.py robot_namespace:=/robot_A launch_marker_publisher:=true
 ```
 
-The node requires a robot equipped with a LiDAR to Registered Point Clouds from SLAM, as well as odometry that enables tracking and estimation of staircases. Please look at `standalone nodes` below for running detection algorithm on a robot that does not have SLAM.  
+The node requires a robot equipped with a LiDAR to Registered Point Clouds from SLAM, as well as odometry that enables tracking and estimation of staircases.
 
 #### Launch File Arguments:
 
@@ -67,23 +67,3 @@ A high-level diagram of the overall flow and our conventions for tf frames are s
   <img src="media/tf_convention.png">
 </p>
 
-## Additional Standalone Nodes
-
-### Staircase Standalone Detection Node
-
-The package provides a standalone `staircase_standalone_detection_node` that uses raw pointclouds from a ZED 2i/Intel Realsense Stereo Camera as input to detect staircases. This node only supports staircase detections and does not perform any merging and estimation of the staircases. 
-
-```
-ros2 launch staircase_perception staircase_standalone_detection_node.launch.py 
-```
-#### Launch File Arguments:
-
-Here are the descriptions of launch arguments from `launch/staircase_estimation_robot_nodes.launch.py`. 
-
-* `robot_namespace`: Sets the namespace for the sensor input topics. Defaults to "".
-* `config_file`: The full path to the parameters file. Defaults to `config/standalone_detection_config.yaml`.
-* `simulation`: If running simulation, set to `true`. Passes the value to `use_sim_time` param and informs ros node to use the `\clock` source.
-
-**NOTE**: 
--   This node expects that camera is aligned w.r.t to gravity, i.e., the z-axis (ROS2 convention) is pointing up in the opposite direction of gravity (0-roll and 0-pitch). If the camera pitches, detections might not occur. 
--   In the future, this will updated such that the node can automatically align the pointcloud by using IMU information from the camera.

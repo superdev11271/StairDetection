@@ -32,6 +32,11 @@ StairDetector::StairDetector(stair_utility::StaircaseDetectorParams detector_par
 
     max_stair_curvature_ = detector_params.max_stair_curvature;
 
+    max_detection_range_ = detector_params.max_detection_range;
+    max_line_fit_stddev_ = detector_params.max_line_fit_stddev;
+    max_step_depth_variation_ = detector_params.max_step_depth_variation;
+    max_step_height_variation_ = detector_params.max_step_height_variation;
+
     initialization_distance_ = detector_params.initialization_range;
     ground_height_buffer_ = detector_params.ground_height_buffer;
     use_ramp_detection_ = detector_params.use_ramp_detection;
@@ -307,20 +312,88 @@ void StairDetector::getLinesFromCloud(){
         // line_extractor_.extractLines(lines);
         if(i < ground_index_ - ground_line_padding_size_){
             line_extractor_.extractLines(detected_lines_below_[i]);
+            filterLowQualityLines(detected_lines_below_[i]);
             linecount = linecount + detected_lines_below_[i]->size();
         }
         else if(i >= (ground_index_ - ground_line_padding_size_) && i <= (ground_index_ + ground_line_padding_size_)){
             line_extractor_.extractLines(detected_lines_ground_[i - ground_index_ + ground_line_padding_size_]);
+            filterLowQualityLines(detected_lines_ground_[i - ground_index_ + ground_line_padding_size_]);
             linecount = linecount + detected_lines_ground_[i - ground_index_ + ground_line_padding_size_]->size();
-        }    
+        }
         else{
             line_extractor_.extractLines(detected_lines_above_[i - ground_index_ - ground_line_padding_size_ - 1 ]);
+            filterLowQualityLines(detected_lines_above_[i - ground_index_ - ground_line_padding_size_ - 1 ]);
             linecount = linecount + detected_lines_above_[i - ground_index_ - ground_line_padding_size_ - 1]->size();
         }
     }
     if(check1 == 0)
         std::cout << "\033[0;33m[Stair Detector]processed cloud is empty: error! \033[0m" << std::endl;
-    
+
+}
+
+// Drop lines that are too far from the robot, or whose fit is too uncertain to be trusted.
+// Operating on the deque (rather than the per-line 'skip' flag) guarantees the rejected
+// lines are excluded from every stage of staircase search, not just initialization.
+void StairDetector::filterLowQualityLines(const std::shared_ptr<std::deque<stair_utility::DetectedLine>>& lines){
+    if(max_detection_range_ <= 0.0 && max_line_fit_stddev_ <= 0.0)
+        return; // both gates disabled
+
+    auto reject = [this](const stair_utility::DetectedLine& l){
+        // Range gate: distance from the robot (local-frame origin) to the line center.
+        if(max_detection_range_ > 0.0){
+            double range = std::sqrt(l.line_center[0] * l.line_center[0] + l.line_center[1] * l.line_center[1]);
+            if(range > max_detection_range_)
+                return true;
+        }
+        // Fit-quality gate: standard deviation of the fitted line radius (line_covariance[0] is the radius variance).
+        if(max_line_fit_stddev_ > 0.0){
+            if(std::sqrt(std::fabs(l.line_covariance[0])) > max_line_fit_stddev_)
+                return true;
+        }
+        return false;
+    };
+
+    lines->erase(std::remove_if(lines->begin(), lines->end(), reject), lines->end());
+}
+
+// A genuine staircase has regular geometry: consecutive steps are evenly spaced in depth
+// and rise by a consistent height. Reject candidates whose inter-step depth/height varies
+// too much (a common signature of spurious groupings of unrelated lines).
+bool StairDetector::isStaircaseConsistent(const std::vector<stair_utility::DetectedLine>& steps) const {
+    if(max_step_depth_variation_ <= 0.0 && max_step_height_variation_ <= 0.0)
+        return true; // both gates disabled
+
+    if(steps.size() < 3)
+        return true; // need at least two gaps to assess regularity
+
+    std::vector<double> depths, heights;
+    depths.reserve(steps.size() - 1);
+    heights.reserve(steps.size() - 1);
+    for(size_t i = 1; i < steps.size(); ++i){
+        depths.push_back(stair_utility::get_xy_distance(steps[i].line_center, steps[i - 1].line_center));
+        heights.push_back(std::fabs(steps[i].line_center[2] - steps[i - 1].line_center[2]));
+    }
+
+    auto stddev = [](const std::vector<double>& v){
+        double mean = 0.0;
+        for(double x : v) mean += x;
+        mean /= v.size();
+        double var = 0.0;
+        for(double x : v) var += (x - mean) * (x - mean);
+        return std::sqrt(var / v.size());
+    };
+
+    if(max_step_depth_variation_ > 0.0 && stddev(depths) > max_step_depth_variation_){
+        std::cout << "\033[1;33m[Stair Detector] Staircase rejected: irregular step depth (std " << stddev(depths)
+                  << " > " << max_step_depth_variation_ << ") \033[0m" << std::endl;
+        return false;
+    }
+    if(max_step_height_variation_ > 0.0 && stddev(heights) > max_step_height_variation_){
+        std::cout << "\033[1;33m[Stair Detector] Staircase rejected: irregular step height (std " << stddev(heights)
+                  << " > " << max_step_height_variation_ << ") \033[0m" << std::endl;
+        return false;
+    }
+    return true;
 }
 
 bool StairDetector::searchForAscendingStairs(){
@@ -543,7 +616,9 @@ bool StairDetector::searchForAscendingStairs(){
             // std::cout << "[Stair Detector ]Num stair in loop " << stairs_up.size() << std::endl;
             if(stairs_up_.size() >= min_stair_count_){
                 if(ramp_lines_up_.size() < ceil((int)stairs_up_.size())){
-                    stair_detected_ = true;
+                    if(isStaircaseConsistent(stairs_up_)){
+                        stair_detected_ = true;
+                    }
                     break;
                 }
                 else{
@@ -791,7 +866,9 @@ bool StairDetector::searchForDescendingStairs(){
             // std::cout << "[Stair Detector] Num stair in loop " << stairs_down_.size() << std::endl;
             if(stairs_down_.size() >= min_stair_count_){
                 if(ramp_lines_down_.size() < ceil((int)stairs_down_.size())){
-                    stair_detected_ = true;
+                    if(isStaircaseConsistent(stairs_down_)){
+                        stair_detected_ = true;
+                    }
                     break;
                 }
                 else{

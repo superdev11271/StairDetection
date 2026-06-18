@@ -48,6 +48,8 @@
 #include <vector>
 #include <stdlib.h>
 #include <chrono>
+#include <unordered_map>
+#include <limits>
 
 // Using statements for easier access to message types
 using std::placeholders::_1;
@@ -84,6 +86,10 @@ class StaircaseEstimationRobotNode : public rclcpp::Node
         void publishStaircaseEstimate(const stair_utility::StaircaseEstimate& estimate);
         void publishLineMarkers();
 
+        // When the detector finds nothing this frame, re-publish recently-detected staircases that
+        // are still within detection_retention_range_ of the robot (bridges momentary dropouts).
+        void republishRecentStaircases();
+
         // Callback methods
         void HandleEnable(const std_msgs::msg::Bool::SharedPtr msg);
         void OdometryHandler(const nav_msgs::msg::Odometry::SharedPtr msg);
@@ -108,6 +114,7 @@ class StaircaseEstimationRobotNode : public rclcpp::Node
 
         double ros_rate_; // This is used to set the timer frequency
         bool debug_, enable_stair_detection_, publish_staircase_measurement_, transform_detections_to_global_, simulation_;
+        double debug_marker_lifetime_; // [s] lifetime of debug line markers so stale ones decay instead of freezing
         std::string robots_topics_prefix_;
         
         rclcpp::Time last_heartbeat_publish_time_;
@@ -158,6 +165,17 @@ class StaircaseEstimationRobotNode : public rclcpp::Node
         SingleRobotStairManager manager_;
 
         stair_utility::StaircaseEstimate stair_up_estimate_, stair_down_estimate_;
+
+        // Cache of the most recent published estimate per staircase id, used to keep nearby
+        // staircases visible during frames where the detector returns nothing.
+        std::unordered_map<int, stair_utility::StaircaseEstimate> last_published_estimates_;
+        double detection_retention_range_; // [m] keep re-publishing cached staircases within this range of the robot
+
+        // Time of the most recent *actual* detection per staircase id. Retention only re-publishes for
+        // detection_hold_time_ seconds after this, so a staircase the robot can no longer see stops being
+        // shown instead of lingering just because the robot is still nearby. <= 0 means no time limit.
+        std::unordered_map<int, rclcpp::Time> last_detection_time_;
+        double detection_hold_time_;
 };
 
 #endif // _STAIRCASE_ROBOTNODE_H_

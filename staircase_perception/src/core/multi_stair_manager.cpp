@@ -154,15 +154,17 @@ SingleRobotStairManager::SingleRobotStairManager(const stair_utility::StairManag
     stair_manager_params_.filter_type = manager_params.filter_type;
     stair_manager_params_.robot_name = manager_params.robot_name;
     stair_manager_params_.filter_sigmas = manager_params.filter_sigmas;
+    stair_manager_params_.min_detections_to_confirm = manager_params.min_detections_to_confirm;
 
     filter_type_ = stair_manager_params_.filter_type;
-    
+    min_detections_to_confirm_ = std::max(1, manager_params.min_detections_to_confirm);
+
     number_of_stairs_ = 0;
 
     std::cout << "\033[1;34m[Stair Manager] Initialized Staircase Manager\033[0m" << std::endl;
 }
 
-int SingleRobotStairManager::addNewDetectedStaircase(const stair_utility::StaircaseMeasurement& new_staircase, stair_utility::StaircaseEstimate &estimate)
+int SingleRobotStairManager::addNewDetectedStaircase(const stair_utility::StaircaseMeasurement& new_staircase, stair_utility::StaircaseEstimate &estimate, bool& is_confirmed)
 {
 
     int id;
@@ -239,7 +241,13 @@ int SingleRobotStairManager::addNewDetectedStaircase(const stair_utility::Stairc
     }
     estimate.staircase_parameters = staircase_database_[id]->staircase_params_;
 
-    std::cout << "\033[1;34m[Stair Manager] Processed Incoming data. Staircase " << id << " has " << staircase_database_[id]->stair_count_ <<" steps. Total staircases in database = " << number_of_stairs_ << " \033[0m" << std::endl;
+    // Confirmation gate: only treat the staircase as a real, publishable detection once it has been
+    // observed/associated enough times in the world frame. A viewpoint-dependent false positive
+    // typically appears once (or lands at an inconsistent world position that never re-associates),
+    // so it never reaches the confirmation threshold.
+    is_confirmed = (staircase_database_[id]->times_observed_ >= min_detections_to_confirm_);
+
+    std::cout << "\033[1;34m[Stair Manager] Processed Incoming data. Staircase " << id << " has " << staircase_database_[id]->stair_count_ <<" steps, observed " << staircase_database_[id]->times_observed_ << "/" << min_detections_to_confirm_ << " time(s)" << (is_confirmed ? " [confirmed]" : " [pending]") << ". Total staircases in database = " << number_of_stairs_ << " \033[0m" << std::endl;
 
     return id;
 }

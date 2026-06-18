@@ -9,22 +9,15 @@
 
     # ROS Topics
     staircase_perception_topics:
-      point_cloud_topic: "registered_point_cloud"
-      odometry_topic: "odometry"
+      point_cloud_topic: "registered_point_cloud"  # cloud already in odom frame, produced by pointcloud_registration_node (bridges raw /rslidar_points)
+      odometry_topic: "dog_odom"                    # resolves to /dog_odom
       global_transform_topic: "transform"
       
       staircase_status_topic: "staircase_estimation_robot_node_status"
       staircase_enable_topic: "staircase_estimation_robot_node_enable"
 
-      staircase_estimates_topic: "/staircase_estimation_robot_node/staircase_estimates" # No namespace because all robots need to publish here for client to pickup
+      staircase_estimates_topic: "/staircase_estimation_robot_node/staircase_estimates"
       staircase_measurements_topic: "staircase_estimation_robot_node/staircase_measurements"
-
-      clutter_point_cloud_in_topic: registered_depth_camera_points # Point cloud input to be used for segmentation, seperated so that a denser source can be used like a realsense
-      clutter_point_cloud_out_topic: "/simple_clutter_segmentation_node/segmented_stair_surface"
-
-      multirobot_merged_staircase_estimates_topic: "multi_robot_staircase_estimates"
-      staircase_client_marker_topic: "staircase_markers"
-      staircase_client_lists_topic: "staircase_lists"
 
 
 staircase_estimation_robot_node:
@@ -37,6 +30,18 @@ staircase_estimation_robot_node:
     odom_frame_id: "odom"
     body_frame_id: "base_link"
     transform_detections_to_global: false
+
+    # On frames where the detector finds nothing, keep re-publishing the most recently detected
+    # staircases whose nearest step is within this distance [m] (3D) of the robot. Bridges momentary
+    # detector dropouts so a clearly-present nearby staircase doesn't flicker out. Set <= 0 to disable.
+    detection_retention_range: 5.0
+    # Only retain a staircase for this long [s] after it was last actually detected. Bridges brief
+    # flicker but stops showing a staircase the robot can no longer see. Set <= 0 for no time limit.
+    detection_hold_time: 1.0
+
+    # Lifetime [s] of the debug line markers (only used when debug: true). Small value so stale lines
+    # decay instead of freezing in RViz when the robot moves on or the detector stops emitting lines.
+    debug_marker_lifetime: 0.5
 
     # Point Cloud Parameters
     stair_pointcloud:
@@ -64,7 +69,13 @@ staircase_estimation_robot_node:
       min_stair_depth: 0.15      # Unit: Meters # Change this to change the minimum stair depth (run) that can be detected
       max_stair_depth: 0.45       # Unit: Meters # Change this to change the maximum stair depth (run) that can be detected
 
-      max_stair_curvature: 0.55   # Unit: Radians # Change this to change maximum staircase curvature for curved staircases 
+      max_stair_curvature: 0.55   # Unit: Radians # Change this to change maximum staircase curvature for curved staircases
+
+      # --- Detection gating: reject far / inconsistent detections (set any to <= 0 to disable that gate) ---
+      max_detection_range: 3.0        # Unit: Meters # Reject lines/steps whose center is farther than this from the robot
+      max_line_fit_stddev: 0.05       # Unit: Meters # Reject lines whose radius-fit std-dev exceeds this (poor/uncertain fit from sparse, far points)
+      max_step_depth_variation: 0.08  # Unit: Meters # Reject staircases whose inter-step depth std-dev exceeds this (irregular spacing)
+      max_step_height_variation: 0.05 # Unit: Meters # Reject staircases whose inter-step height std-dev exceeds this (irregular rise)
 
       angle_resolution: 1.0       # Unit: Degrees (For front-view projection)
       robot_height: 0.5           # Unit: Meters (Used to segment ground height)
@@ -92,6 +103,9 @@ staircase_estimation_robot_node:
     stair_manager:
       yaw_threshold: 0.75 # [Unit: Radians] Angle between current staircase and incoming detection to be considered similar
       filter_type: "l_ekf" # "averg" for Simple Averaging,"l_ekf" for EKF in Local Frame, "maxim" for Maximizing filter
+      # World-frame confirmation: a staircase must be re-observed/associated this many times before it is published.
+      # Suppresses pose-dependent false positives that only appear from a single viewpoint as the robot turns. Set 1 to disable.
+      min_detections_to_confirm: 3 # [Unit: Count]
 
     stair_ekf_params:
       initial_measurement_sigmas: [0.1, 0.1, 0.2, 0.2] # r, theta, z_start, z_end
@@ -102,33 +116,9 @@ staircase_estimation_robot_node:
 
       model_noise_sigmas: [0.005, 0.005, 0.0, 0.05, 0.1, 0.05] # Noise in model (height, depth, width, initial angle, deviation, end_angle)
 
-simple_clutter_segmentation_node:
+stair_viz_node:
   ros__parameters:
-    processing_rate: 10.0
-    robot_name: "robot"
-    odom_frame_id: "odom"
-    body_frame_id: "base_link"
-    transform_detections_to_global: false
-
-    segmentation_params:
-      max_surface_thickness: 0.05
-      combine_pointcloud_scans: true
-
-      leaf_size: 0.025
-      # Cloud Range Cropped for Segmentation
-      min_range_y: -4.0
-      max_range_y:  4.0 # Total Y range
-      min_range_x: -4.0 
-      max_range_x: 4.0  # Total X range 
-      min_range_z: -2.5
-      max_range_z: 1.5  # Total Z range 
-
-staircase_client_node:
-  ros__parameters:
-    
-    publish_updated_estimate: true
-    publish_marker_type: "combined" # "combined" or "seperate"
-
-    stair_manager:
-      yaw_threshold: 0.75 # [Unit: Radians] Angle between current staircase and incoming detection to be considered similar
-      filter_type: "averg" # "averg" for Simple Averaging. Client node doesn't support any other filter yet.
+    # Lifetime [s] of RViz markers. Detected staircases are re-published every frame, so they stay
+    # visible; once a staircase stops being detected its markers expire after this time. Keep it small
+    # (a few frames at the detection rate) to show only current detections instead of accumulating old ones.
+    marker_lifetime: 0.5

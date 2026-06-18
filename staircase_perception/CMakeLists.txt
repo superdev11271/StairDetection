@@ -43,16 +43,6 @@ file(GLOB single_robot_pipeline_src
   "src/core/staircase_model.cpp"
 )
 
-file(GLOB standalone_detection_src
-  "src/core/stair_detector.cpp"
-)
-
-file(GLOB client_pipeline_src
-  "src/core/multi_stair_manager.cpp"
-  "src/core/multi_robot_manager.cpp"
-  "src/core/staircase_model.cpp"
-)
-
 # Executable for staircase_estimation_robot_node
 add_executable(staircase_estimation_robot_node "src/ros2/staircase_estimation_robot_node.cpp" ${single_robot_pipeline_src} ${line_extraction_src})
 
@@ -83,97 +73,9 @@ target_link_libraries(staircase_estimation_robot_node
   Eigen3::Eigen 
 )
 
-# Executable for simple_clutter_segmentation_node
-add_executable(simple_clutter_segmentation_node "src/ros2/simple_clutter_segmentation_node.cpp")
-
-target_include_directories(simple_clutter_segmentation_node PUBLIC
-  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-  ${EIGEN3_INCLUDE_DIRS}
-  ${PCL_INCLUDE_DIRS}
-)
-
-ament_target_dependencies(simple_clutter_segmentation_node
-  rclcpp
-  std_msgs
-  sensor_msgs
-  nav_msgs
-  visualization_msgs
-  geometry_msgs
-  tf2_ros
-  tf2_eigen
-  tf2_geometry_msgs
-  tf2_sensor_msgs
-  pcl_conversions
-  pcl_ros
-  staircase_msgs
-)
-
-target_link_libraries(simple_clutter_segmentation_node
-  ${PCL_LIBRARIES}
-  Eigen3::Eigen 
-)
-
-# Executable for staircase_client_node
-add_executable(staircase_client_node "src/ros2/staircase_client_node.cpp" ${client_pipeline_src})
-
-target_include_directories(staircase_client_node PUBLIC
-  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-  ${EIGEN3_INCLUDE_DIRS}
-  ${PCL_INCLUDE_DIRS}
-)
-
-ament_target_dependencies(staircase_client_node
-  rclcpp
-  std_msgs
-  sensor_msgs
-  nav_msgs
-  visualization_msgs
-  geometry_msgs
-  tf2_ros
-  tf2_geometry_msgs
-  pcl_conversions
-  staircase_msgs
-)
-
-target_link_libraries(staircase_client_node
-  ${PCL_LIBRARIES}
-  Eigen3::Eigen
-)
-
-# Executable for standalone detection node
-add_executable(staircase_standalone_detection_node "src/ros2/staircase_standalone_detection_node.cpp" ${standalone_detection_src} ${line_extraction_src})
-
-target_include_directories(staircase_standalone_detection_node PUBLIC
-  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-  ${EIGEN3_INCLUDE_DIRS}
-  ${PCL_INCLUDE_DIRS}
-)
-
-ament_target_dependencies(staircase_standalone_detection_node
-  rclcpp
-  std_msgs
-  sensor_msgs
-  nav_msgs
-  visualization_msgs
-  geometry_msgs
-  pcl_ros
-  tf2_ros
-  tf2_geometry_msgs
-  pcl_conversions
-  staircase_msgs
-)
-
-target_link_libraries(staircase_standalone_detection_node
-  ${PCL_LIBRARIES}
-  Eigen3::Eigen
-)
-
 # Install executables
 install(TARGETS
   staircase_estimation_robot_node
-  staircase_client_node
-  simple_clutter_segmentation_node
-  staircase_standalone_detection_node
   DESTINATION lib/${PROJECT_NAME}
 )
 
@@ -199,6 +101,7 @@ ament_python_install_package(${PROJECT_NAME})
 
 install(PROGRAMS
   scripts/staircase_marker_publisher.py
+  scripts/pointcloud_registration_node.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

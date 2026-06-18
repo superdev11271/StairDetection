@@ -177,6 +177,8 @@ class StaircaseModel
     public:
         int stair_id_;
         int stair_count_;
+        // Number of world-frame observations associated to this staircase (starts at 1 on creation).
+        int times_observed_ = 1;
 
         StaircaseParameters staircase_params_; 
         stair_utility::StaircaseInfo staircase_info_;

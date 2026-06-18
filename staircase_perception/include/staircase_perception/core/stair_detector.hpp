@@ -61,6 +61,10 @@ class StairDetector
         // Functions
         void SegmentPointCloud();
         void getLinesFromCloud();
+        // Removes extracted lines that are too far from the robot or whose fit is unreliable.
+        void filterLowQualityLines(const std::shared_ptr<std::deque<stair_utility::DetectedLine>>& lines);
+        // Returns false if the assembled steps are too irregular in depth/height to be a real staircase.
+        bool isStaircaseConsistent(const std::vector<stair_utility::DetectedLine>& steps) const;
         bool searchForAscendingStairs();
         bool searchForDescendingStairs();
         
@@ -90,6 +94,10 @@ class StairDetector
         double stair_slope_min_, stair_slope_max_;
         double min_stair_width_, min_stair_height_, max_stair_height_;
         double min_stair_depth_, max_stair_depth_, max_stair_curvature_;
+
+        // Detection gating thresholds (<= 0.0 disables the corresponding gate)
+        double max_detection_range_, max_line_fit_stddev_;
+        double max_step_depth_variation_, max_step_height_variation_;
 
         bool stair_detected_;
         int stair_initialization_range_, ground_line_padding_size_;

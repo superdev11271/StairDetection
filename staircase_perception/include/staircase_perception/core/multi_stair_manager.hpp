@@ -33,36 +33,19 @@ class SingleRobotStairManager: public BaseStaircaseManager{
         ~SingleRobotStairManager(){};
         SingleRobotStairManager(const stair_utility::StairManagerParams& params);
 
-        int addNewDetectedStaircase(const stair_utility::StaircaseMeasurement& new_staircase, stair_utility::StaircaseEstimate &estimate);
-        
+        // is_confirmed is set true once the staircase has been observed at least
+        // min_detections_to_confirm times in the world frame (filters viewpoint-dependent false positives).
+        int addNewDetectedStaircase(const stair_utility::StaircaseMeasurement& new_staircase, stair_utility::StaircaseEstimate &estimate, bool& is_confirmed);
+
         stair_utility::StaircaseProcessingResult time_results_;
     private:
 
         void computeStaircaseInfo(const stair_utility::StaircaseMeasurement& new_staircase, stair_utility::StaircaseInfo& stair_info);
 
         stair_utility::StaircaseFilterType filter_type_;
+        int min_detections_to_confirm_;
         std::unordered_map<int, std::shared_ptr<StaircaseModel>> staircase_database_;
 
-};
-
-
-class MultiRobotStairManager: public BaseStaircaseManager{
-    public:
-        MultiRobotStairManager(){};
-        ~MultiRobotStairManager(){};
-        MultiRobotStairManager(const stair_utility::StairManagerParams& params);
-
-        int addNewDetectedStaircase(const stair_utility::StaircaseEstimate& incoming_staircase, std::string robot_name, stair_utility::StaircaseEstimate& outgoing_staircase, stair_utility::SingleStaircaseSummary& updated_summary);
-        void getStaircaseSummaries(std::vector<stair_utility::SingleStaircaseSummary> &stair_summaries);
-    
-    private:
-        std::set<std::string> robot_list_;
-        stair_utility::StaircaseFilterType filter_type_;
-
-        void computeStaircaseInfo(const stair_utility::StaircaseEstimate& new_estimate, stair_utility::StaircaseInfo& stair_info);
-
-        std::unordered_map<int, std::shared_ptr<StaircaseModel>> staircase_database_;
-        std::unordered_map<int, std::unordered_map<std::string, stair_utility::StaircaseEstimate>> staircase_estimate_database_;
 };
 
 #endif

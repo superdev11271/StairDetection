@@ -26,7 +26,12 @@ class StairViz(Node):
         self.staircase_measurements_topic = self.get_parameter('staircase_perception_topics.staircase_measurements_topic').get_parameter_value().string_value
         
         self.simulation = self.get_parameter('use_sim_time').get_parameter_value().bool_value
-        
+
+        # Marker lifetime [s]. Markers expire after this long, so only currently-detected staircases
+        # stay visible (they are re-published every frame); stale detections disappear automatically.
+        self.declare_parameter('marker_lifetime', 0.5)
+        self.marker_lifetime = self.get_parameter('marker_lifetime').get_parameter_value().double_value
+
         # Create subscribers
         self.create_subscription(StaircaseMeasurement, self.staircase_measurements_topic, self.stairs_measurement_cb, 10)
         self.create_subscription(StaircaseMsg, self.staircase_estimates_topic, self.stairs_detected_cb, 10)
@@ -38,8 +43,25 @@ class StairViz(Node):
         # Class variables to store state
         self.max_stairs_estimate_id_map = {}
         self.max_stairs_measurement_id_map = {}
-        
+
+        # Wipe any markers left in RViz by a previous run (e.g. from an older build that used a
+        # long marker lifetime). Published on a short one-shot timer so RViz has time to connect.
+        self._startup_clear_count = 0
+        self._startup_clear_timer = self.create_timer(0.2, self._clear_stale_markers)
+
         self.get_logger().info(f"Stair visualization node started. Simulation: {self.simulation}")
+
+    def _clear_stale_markers(self):
+        """Publish a DELETEALL to both marker topics a few times right after startup."""
+        clear = MarkerArray()
+        delete_all = Marker()
+        delete_all.action = Marker.DELETEALL
+        clear.markers.append(delete_all)
+        self.stair_estimate_array_pub.publish(clear)
+        self.stair_measurement_array_pub.publish(clear)
+        self._startup_clear_count += 1
+        if self._startup_clear_count >= 5:
+            self._startup_clear_timer.cancel()
 
     def stairs_detected_cb(self, msg: StaircaseMsg):
         """
@@ -62,7 +84,7 @@ class StairViz(Node):
             stairs_marker.id = (stair_id * 100) + i
             stairs_marker.action = Marker.ADD
             stairs_marker.type = Marker.CUBE
-            stairs_marker.lifetime = Duration(seconds=1000).to_msg()
+            stairs_marker.lifetime = Duration(seconds=self.marker_lifetime).to_msg()
 
             # Set color and scale
             stairs_marker.color.r = 1.0
@@ -135,7 +157,7 @@ class StairViz(Node):
             stairs_marker.id = (stair_id * 100) + i
             stairs_marker.action = Marker.ADD
             stairs_marker.type = Marker.CUBE
-            stairs_marker.lifetime = Duration(seconds=1000).to_msg()
+            stairs_marker.lifetime = Duration(seconds=self.marker_lifetime).to_msg()
 
             stairs_marker.color.r = 0.028
             stairs_marker.color.g = 0.681

@@ -10,18 +10,7 @@ This package implements and merges the work from two research papers. The core f
 
 1.  [**Fast Staircase Detection and Multi-Robot Merging (ICRA 2023):**](https://www.prassi.me/fast-staircase-detection) A computationally efficient method for detecting staircases from 3D point clouds. It relies on extracting line segments from a pre-processed point cloud and applying a set of geometric constraints to identify potential stair structures. This approach also includes a method for merging detections from multiple viewpoints or robots to create a more complete estimate of the staircase.
 
-<p align="center">
-  <img width="600" src="docs/media/staircase_results_animation.gif">
-</p>
-<p align="center">
-  <img width="600" src="docs/media/staircase_merging_animation.gif">
-</p>
-
 2.  [**Bayesian Modeling and Inference for Cluttered Staircases (RA-L 2025):**](https://www.prassi.me/bayesian-staircase-estimation) A probabilistic framework that improves staircase estimation, especially in cluttered scenes where stairs might be partially obscured. This method uses a Bayesian model to combine measurements (detections) using an Extended Kalman Filter. We can then segment points on stair surfaces usin the estimated staircase location.
-
-<p align="center">
-  <img width="600" src="docs/media/bse_result_animation.gif">
-</p>
 
 ---
 ## Quick Start
@@ -50,15 +39,6 @@ If you have a multi-robot setup, you can launch the above node on each of the ro
 ```
 ros2 launch staircase_perception staircase_client_nodes.launch.py 
 ```
-
-### Standalone Staircase Detection
-If you do not have registered point clouds and want to run just the detection pipeline without merging, you can use raw pointclouds from a Zed 2i/Intel Realsense camera using the standalone ros node. First launch the standalone detection node. 
-
-```
-ros2 launch staircase_perception staircase_standalone_detection_node.launch.py 
-```
-
-**NOTE**: This node expects that camera is aligned w.r.t to gravity, i.e., the z-axis (ROS2 convention) is pointing up in the opposite direction of gravity (0-roll and 0-pitch). If the camera pitches, detections might not occur. 
 
 ---
 
