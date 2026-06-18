@@ -50,6 +50,7 @@
 #include <chrono>
 #include <unordered_map>
 #include <limits>
+#include <cmath>
 
 // Using statements for easier access to message types
 using std::placeholders::_1;
@@ -69,6 +70,7 @@ class StaircaseEstimationRobotNode : public rclcpp::Node
         // ROS 2 Publishers
         rclcpp::Publisher<staircase_msgs::msg::StaircaseMsg>::SharedPtr stairs_pub_;
         rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr staircase_status_pub_;
+        rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr robot_on_staircase_pub_;
         rclcpp::Publisher<staircase_msgs::msg::StaircaseMeasurement>::SharedPtr measurement_pub_;
         rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr process_cl_pub1_; 
         rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr process_cl_pub2_; 
@@ -90,6 +92,12 @@ class StaircaseEstimationRobotNode : public rclcpp::Node
         // are still within detection_retention_range_ of the robot (bridges momentary dropouts).
         void republishRecentStaircases();
 
+        // True when the robot's (x, y) lies inside the circumscribed rectangle of any known
+        // staircase footprint (height ignored) and its z lies within that staircase's z-span.
+        bool isRobotOnStaircase() const;
+        // Publish, every cycle, the boolean result of isRobotOnStaircase() on robot_on_staircase_topic_.
+        void publishRobotOnStaircase();
+
         // Callback methods
         void HandleEnable(const std_msgs::msg::Bool::SharedPtr msg);
         void OdometryHandler(const nav_msgs::msg::Odometry::SharedPtr msg);
@@ -107,7 +115,11 @@ class StaircaseEstimationRobotNode : public rclcpp::Node
         // Member Variables
         // Topic Names
         std::string pointcloud_topic_, odom_topic_, staircase_node_status_topic_, staircase_node_toggle_topic_, global_tf_topic_;
-        std::string staircase_estimates_topic_, staircase_measurements_topic_;
+        std::string staircase_estimates_topic_, staircase_measurements_topic_, robot_on_staircase_topic_;
+
+        // Robot-on-staircase test tolerances: the robot must be within on_staircase_proximity_ [m]
+        // (3D, to an actual step) AND inside the footprint rectangle expanded by on_staircase_xy_margin_ [m].
+        double on_staircase_xy_margin_, on_staircase_proximity_;
 
         // ROSNode Variables
         std::string global_frame_id_, body_frame_id_, odom_frame_id_, robot_name_;

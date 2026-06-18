@@ -11,6 +11,12 @@ import tf2_geometry_msgs
 import numpy as np
 from math import sqrt
 
+try:
+    from scipy.spatial import ConvexHull, QhullError
+except Exception:  # pragma: no cover - scipy layout differences across versions
+    ConvexHull = None
+    QhullError = Exception
+
 class StairViz(Node):
     def __init__(self):
         """
@@ -40,9 +46,14 @@ class StairViz(Node):
         self.stair_measurement_array_pub = self.create_publisher(MarkerArray, "/staircase_viz_node/stair_measurements_markers", 10)
         self.stair_estimate_array_pub = self.create_publisher(MarkerArray, "/staircase_viz_node/stair_estimate_markers", 10)
 
+        # Footprint topic: each detected staircase projected flat onto a single plane (height ignored),
+        # plus its circumscribed (minimum-area) rectangle drawn as a LINE_STRIP.
+        self.stair_footprint_array_pub = self.create_publisher(MarkerArray, "/staircase_viz_node/stair_footprint_markers", 10)
+
         # Class variables to store state
         self.max_stairs_estimate_id_map = {}
         self.max_stairs_measurement_id_map = {}
+        self.max_footprint_step_id_map = {}
 
         # Wipe any markers left in RViz by a previous run (e.g. from an older build that used a
         # long marker lifetime). Published on a short one-shot timer so RViz has time to connect.
@@ -59,6 +70,7 @@ class StairViz(Node):
         clear.markers.append(delete_all)
         self.stair_estimate_array_pub.publish(clear)
         self.stair_measurement_array_pub.publish(clear)
+        self.stair_footprint_array_pub.publish(clear)
         self._startup_clear_count += 1
         if self._startup_clear_count >= 5:
             self._startup_clear_timer.cancel()
@@ -134,6 +146,128 @@ class StairViz(Node):
         self.stair_estimate_array_pub.publish(stairs_marker_array)
         self.max_stairs_estimate_id_map[stair_id] = current_count
 
+        # Also emit the flattened footprint + circumscribed rectangle for this detection.
+        self._publish_footprint(msg)
+
+    def _min_area_rect(self, pts):
+        """Return the 4 corners (4x2 array) of the minimum-area rectangle enclosing the 2D
+        points, using rotating calipers on the convex hull. Falls back to an axis-aligned
+        bounding box for degenerate input (few / collinear points)."""
+        pts = np.asarray(pts, dtype=float).reshape(-1, 2)
+        if pts.shape[0] == 0:
+            return None
+        if pts.shape[0] < 3 or ConvexHull is None:
+            return self._aabb_corners(pts)
+        try:
+            hull = pts[ConvexHull(pts).vertices]
+        except QhullError:
+            return self._aabb_corners(pts)  # collinear / coincident points
+
+        best_area = None
+        best_corners = None
+        n = len(hull)
+        for i in range(n):
+            edge = hull[(i + 1) % n] - hull[i]
+            norm = float(np.hypot(edge[0], edge[1]))
+            if norm < 1e-9:
+                continue
+            ux = edge / norm                       # one rectangle axis = this hull edge
+            uy = np.array([-ux[1], ux[0]])         # perpendicular axis
+            px = hull @ ux
+            py = hull @ uy
+            min_x, max_x = px.min(), px.max()
+            min_y, max_y = py.min(), py.max()
+            area = (max_x - min_x) * (max_y - min_y)
+            if best_area is None or area < best_area:
+                best_area = area
+                local = np.array([[min_x, min_y], [max_x, min_y],
+                                  [max_x, max_y], [min_x, max_y]])
+                # Map corners from (ux, uy) basis back into world XY.
+                best_corners = local @ np.vstack([ux, uy])
+        if best_corners is None:
+            return self._aabb_corners(pts)
+        return best_corners
+
+    @staticmethod
+    def _aabb_corners(pts):
+        pts = np.asarray(pts, dtype=float).reshape(-1, 2)
+        if pts.shape[0] == 0:
+            return None
+        min_xy = pts.min(axis=0)
+        max_xy = pts.max(axis=0)
+        return np.array([[min_xy[0], min_xy[1]], [max_xy[0], min_xy[1]],
+                         [max_xy[0], max_xy[1]], [min_xy[0], max_xy[1]]])
+
+    def _publish_footprint(self, msg: StaircaseMsg):
+        """Project every step of this staircase onto a single plane (height ignored),
+        publish each projected step as a marker, then publish the circumscribed rectangle
+        of all projected points as a closed LINE_STRIP -- on a separate topic."""
+        stair_id = msg.stair_id
+        current_count = msg.stair_count
+
+        marker_array = MarkerArray()
+        now = self.get_clock().now().to_msg()
+
+        if current_count > 0:
+            # Gather all endpoints and pick the plane height = lowest point (the base).
+            pts2d = []
+            z_plane = float('inf')
+            for i in range(current_count):
+                sp, ep = msg.steps_start_p[i], msg.steps_end_p[i]
+                pts2d.append((sp.x, sp.y))
+                pts2d.append((ep.x, ep.y))
+                z_plane = min(z_plane, sp.z, ep.z)
+            if not np.isfinite(z_plane):
+                z_plane = 0.0
+
+            # 1) The detection results, one marker per step, projected onto the plane.
+            for i in range(current_count):
+                sp, ep = msg.steps_start_p[i], msg.steps_end_p[i]
+                step = Marker()
+                step.header.frame_id = msg.frame_id
+                step.header.stamp = now
+                step.ns = f"footprint_steps_{stair_id}"
+                step.id = (stair_id * 100) + i
+                step.action = Marker.ADD
+                step.type = Marker.LINE_STRIP
+                step.lifetime = Duration(seconds=self.marker_lifetime).to_msg()
+                step.scale.x = 0.02
+                step.color.r, step.color.g, step.color.b, step.color.a = 1.0, 1.0, 0.0, 0.8
+                step.points = [Point(x=sp.x, y=sp.y, z=z_plane),
+                               Point(x=ep.x, y=ep.y, z=z_plane)]
+                marker_array.markers.append(step)
+
+            # 2) Circumscribed rectangle of all projected points, as a closed LINE_STRIP.
+            corners = self._min_area_rect(np.array(pts2d))
+            if corners is not None:
+                rect = Marker()
+                rect.header.frame_id = msg.frame_id
+                rect.header.stamp = now
+                rect.ns = f"footprint_rect_{stair_id}"
+                rect.id = stair_id
+                rect.action = Marker.ADD
+                rect.type = Marker.LINE_STRIP
+                rect.lifetime = Duration(seconds=self.marker_lifetime).to_msg()
+                rect.scale.x = 0.04
+                rect.color.r, rect.color.g, rect.color.b, rect.color.a = 0.0, 1.0, 0.0, 1.0
+                rect.points = [Point(x=float(c[0]), y=float(c[1]), z=z_plane) for c in corners]
+                rect.points.append(rect.points[0])  # close the loop back to the first corner
+                marker_array.markers.append(rect)
+
+        # Delete stale per-step markers if the staircase shrank since last time.
+        old_count = self.max_footprint_step_id_map.get(stair_id, 0)
+        if old_count > current_count:
+            for i in range(current_count, old_count):
+                dm = Marker()
+                dm.header.frame_id = msg.frame_id
+                dm.header.stamp = now
+                dm.ns = f"footprint_steps_{stair_id}"
+                dm.id = (stair_id * 100) + i
+                dm.action = Marker.DELETE
+                marker_array.markers.append(dm)
+        self.max_footprint_step_id_map[stair_id] = current_count
+
+        self.stair_footprint_array_pub.publish(marker_array)
 
     def stairs_measurement_cb(self, msg: StaircaseMeasurement):
         """

@@ -12,6 +12,7 @@ StaircaseEstimationRobotNode::StaircaseEstimationRobotNode() : Node("staircase_e
     this->declare_parameter<std::string>("staircase_perception_topics.global_transform_topic", "transform");
     this->declare_parameter<std::string>("staircase_perception_topics.staircase_estimates_topic", "staircase_estimation_robot_node/staircase_estimates");
     this->declare_parameter<std::string>("staircase_perception_topics.staircase_measurements_topic", "staircase_estimation_robot_node/staircase_measurements");
+    this->declare_parameter<std::string>("staircase_perception_topics.robot_on_staircase_topic", "staircase_estimation_robot_node/robot_on_staircase");
 
 
     this->get_parameter("staircase_perception_topics.point_cloud_topic", pointcloud_topic_);
@@ -21,6 +22,7 @@ StaircaseEstimationRobotNode::StaircaseEstimationRobotNode() : Node("staircase_e
     this->get_parameter("staircase_perception_topics.global_transform_topic", global_tf_topic_);
     this->get_parameter("staircase_perception_topics.staircase_estimates_topic", staircase_estimates_topic_);
     this->get_parameter("staircase_perception_topics.staircase_measurements_topic", staircase_measurements_topic_);
+    this->get_parameter("staircase_perception_topics.robot_on_staircase_topic", robot_on_staircase_topic_);
 
 
     // ROS Node parameters
@@ -40,6 +42,8 @@ StaircaseEstimationRobotNode::StaircaseEstimationRobotNode() : Node("staircase_e
     this->declare_parameter<double>("detection_retention_range", 5.0);
     this->declare_parameter<double>("detection_hold_time", 1.0);
     this->declare_parameter<double>("debug_marker_lifetime", 0.5);
+    this->declare_parameter<double>("on_staircase_xy_margin", 0.3);
+    this->declare_parameter<double>("on_staircase_proximity", 2.0);
 
     this->get_parameter("ros_rate", ros_rate_);
     this->get_parameter("debug", debug_);
@@ -52,6 +56,8 @@ StaircaseEstimationRobotNode::StaircaseEstimationRobotNode() : Node("staircase_e
     this->get_parameter("detection_retention_range", detection_retention_range_);
     this->get_parameter("detection_hold_time", detection_hold_time_);
     this->get_parameter("debug_marker_lifetime", debug_marker_lifetime_);
+    this->get_parameter("on_staircase_xy_margin", on_staircase_xy_margin_);
+    this->get_parameter("on_staircase_proximity", on_staircase_proximity_);
 
     // Point cloud pre-processing params
     this->declare_parameter<double>("stair_pointcloud.leaf_size", 0.025);
@@ -248,6 +254,8 @@ StaircaseEstimationRobotNode::StaircaseEstimationRobotNode() : Node("staircase_e
     
     stairs_pub_ = this->create_publisher<staircase_msgs::msg::StaircaseMsg>(staircase_estimates_topic_, 10);
 
+    robot_on_staircase_pub_ = this->create_publisher<std_msgs::msg::Bool>(robot_on_staircase_topic_, 10);
+
     detection_timer_ = this->create_wall_timer(
         std::chrono::duration<double>(1.0 / ros_rate_),
         std::bind(&StaircaseEstimationRobotNode::PerceiveStaircases, this));
@@ -400,6 +408,9 @@ void StaircaseEstimationRobotNode::PerceiveStaircases()
             publishLineMarkers();
         }
     }
+
+    // Every cycle, report whether the robot currently stands within a detected staircase footprint.
+    publishRobotOnStaircase();
 
     if ((this->now() - last_heartbeat_publish_time_).seconds() > 2.0)
     {
@@ -619,6 +630,98 @@ void StaircaseEstimationRobotNode::republishRecentStaircases() {
             publishStaircaseEstimate(estimate);
         }
     }
+}
+
+// Decide whether the robot is standing on a staircase. Two conditions must both hold for some
+// known staircase:
+//   (1) Proximity: the robot is within on_staircase_proximity_ [m] (3D) of an actual step. This is
+//       the primary guard against false positives -- a staircase the robot is several meters from
+//       (including one on another floor, which differs mostly in z) is rejected here. It also makes
+//       the result robust to a stale/over-large footprint, because the test is against real steps,
+//       not the (outlier-sensitive) bounding rectangle.
+//   (2) Footprint: the robot's (x, y) lies inside the staircase's circumscribed rectangle (the same
+//       footprint the visualization draws), expanded by on_staircase_xy_margin_. This rejects a
+//       robot that is close to one end of the staircase but standing off to the side of it.
+bool StaircaseEstimationRobotNode::isRobotOnStaircase() const {
+    const double proximity_sq = on_staircase_proximity_ * on_staircase_proximity_;
+
+    for (const auto& entry : last_published_estimates_) {
+        const int stair_id = entry.first;
+        const stair_utility::StaircaseEstimate& estimate = entry.second;
+        if (estimate.steps.empty())
+            continue;
+
+        // (0) Recency gate: only consider staircases the detector has actually seen recently. The
+        // cache keeps every confirmed staircase for the whole session, including stale ghosts that
+        // are no longer detected and therefore no longer published/drawn. Without this gate such a
+        // ghost -- which can sit right where the robot now stands -- would wrongly report the robot
+        // "on the stairs". Mirrors republishRecentStaircases so the flag matches what is visible.
+        if (detection_hold_time_ > 0.0) {
+            auto t_it = last_detection_time_.find(stair_id);
+            if (t_it == last_detection_time_.end() ||
+                (this->now() - t_it->second).seconds() > detection_hold_time_) {
+                continue;
+            }
+        }
+
+        // (1) Proximity gate: nearest step endpoint to the robot, in 3D.
+        double min_dist_sq = std::numeric_limits<double>::max();
+        for (const auto& step : estimate.steps) {
+            const double dxs = step.start_p(0) - vehicle_x_, dys = step.start_p(1) - vehicle_y_, dzs = step.start_p(2) - vehicle_z_;
+            min_dist_sq = std::min(min_dist_sq, dxs * dxs + dys * dys + dzs * dzs);
+            const double dxe = step.end_p(0) - vehicle_x_, dye = step.end_p(1) - vehicle_y_, dze = step.end_p(2) - vehicle_z_;
+            min_dist_sq = std::min(min_dist_sq, dxe * dxe + dye * dye + dze * dze);
+        }
+        if (min_dist_sq > proximity_sq)
+            continue;   // too far from this staircase to be standing on it
+
+        // (2) Footprint gate. Planar axes: u along the step direction (width), v perpendicular
+        // (the climb/run direction). Sum the per-step direction vectors so the basis is robust to
+        // per-step noise; every step runs start_p -> end_p the same way, so the terms reinforce.
+        double dux = 0.0, duy = 0.0;
+        for (const auto& step : estimate.steps) {
+            dux += step.end_p(0) - step.start_p(0);
+            duy += step.end_p(1) - step.start_p(1);
+        }
+        const double dnorm = std::sqrt(dux * dux + duy * duy);
+        double ux = 1.0, uy = 0.0;          // degenerate fallback: axis-aligned box
+        if (dnorm > 1e-6) {
+            ux = dux / dnorm;
+            uy = duy / dnorm;
+        }
+        const double vx = -uy, vy = ux;     // perpendicular axis
+
+        // Project every endpoint onto (u, v) for the rectangle bounds.
+        double umin = std::numeric_limits<double>::max(), umax = std::numeric_limits<double>::lowest();
+        double vmin = std::numeric_limits<double>::max(), vmax = std::numeric_limits<double>::lowest();
+        auto accumulate = [&](double x, double y) {
+            const double pu = x * ux + y * uy;
+            const double pv = x * vx + y * vy;
+            umin = std::min(umin, pu); umax = std::max(umax, pu);
+            vmin = std::min(vmin, pv); vmax = std::max(vmax, pv);
+        };
+        for (const auto& step : estimate.steps) {
+            accumulate(step.start_p(0), step.start_p(1));
+            accumulate(step.end_p(0),   step.end_p(1));
+        }
+
+        // Project the robot into the same basis and test inclusion (rectangle + margin).
+        const double ru = vehicle_x_ * ux + vehicle_y_ * uy;
+        const double rv = vehicle_x_ * vx + vehicle_y_ * vy;
+        const bool inside_xy = (ru >= umin - on_staircase_xy_margin_) && (ru <= umax + on_staircase_xy_margin_) &&
+                               (rv >= vmin - on_staircase_xy_margin_) && (rv <= vmax + on_staircase_xy_margin_);
+
+        if (inside_xy)
+            return true;
+    }
+    return false;
+}
+
+void StaircaseEstimationRobotNode::publishRobotOnStaircase() {
+    std_msgs::msg::Bool msg;
+    // Only meaningful once we know where the robot is; report false until odometry arrives.
+    msg.data = odom_initialized_ ? isRobotOnStaircase() : false;
+    robot_on_staircase_pub_->publish(msg);
 }
 
 void StaircaseEstimationRobotNode::publishLineMarkers() {

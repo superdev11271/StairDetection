@@ -19,6 +19,9 @@
       staircase_estimates_topic: "/staircase_estimation_robot_node/staircase_estimates"
       staircase_measurements_topic: "staircase_estimation_robot_node/staircase_measurements"
 
+      # std_msgs/Bool: true when the robot is standing within a detected staircase footprint
+      robot_on_staircase_topic: "staircase_estimation_robot_node/robot_on_staircase"
+
 
 staircase_estimation_robot_node:
   ros__parameters:
@@ -42,6 +45,16 @@ staircase_estimation_robot_node:
     # Lifetime [s] of the debug line markers (only used when debug: true). Small value so stale lines
     # decay instead of freezing in RViz when the robot moves on or the detector stops emitting lines.
     debug_marker_lifetime: 0.5
+
+    # robot_on_staircase test (Bool on robot_on_staircase_topic). BOTH conditions must hold:
+    #  - Proximity: the robot is within this distance [m] (3D) of an actual step. This is the main
+    #    guard against false positives -- a staircase several meters away (or one on another floor,
+    #    which differs mostly in z) is rejected. Increase if the flag flickers off while truly on a
+    #    wide staircase; decrease if it triggers too early when approaching.
+    on_staircase_proximity: 2.0
+    #  - Footprint: the robot's (x,y) lies inside the staircase's circumscribed rectangle, expanded
+    #    by this margin [m]. Rejects a robot that is close to one end but standing off to the side.
+    on_staircase_xy_margin: 0.3
 
     # Point Cloud Parameters
     stair_pointcloud:
@@ -72,7 +85,11 @@ staircase_estimation_robot_node:
       max_stair_curvature: 0.55   # Unit: Radians # Change this to change maximum staircase curvature for curved staircases
 
       # --- Detection gating: reject far / inconsistent detections (set any to <= 0 to disable that gate) ---
-      max_detection_range: 3.0        # Unit: Meters # Reject lines/steps whose center is farther than this from the robot
+      max_detection_range: 5.0        # Unit: Meters # Reject lines/steps whose center is farther than this from the robot.
+                                       # NOTE: this gate prunes individual steps BEFORE staircase search, so a value smaller
+                                       # than the staircase's horizontal extent truncates the detection to only its near end.
+                                       # Keep it >= 'stair_line_extractor.max_range' (5.0) so the full staircase is reported;
+                                       # far false positives are instead rejected by max_line_fit_stddev + min_detections_to_confirm.
       max_line_fit_stddev: 0.05       # Unit: Meters # Reject lines whose radius-fit std-dev exceeds this (poor/uncertain fit from sparse, far points)
       max_step_depth_variation: 0.08  # Unit: Meters # Reject staircases whose inter-step depth std-dev exceeds this (irregular spacing)
       max_step_height_variation: 0.05 # Unit: Meters # Reject staircases whose inter-step height std-dev exceeds this (irregular rise)
